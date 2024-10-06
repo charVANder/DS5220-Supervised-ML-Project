@@ -1,11 +1,14 @@
 import pandas as pd
 import numpy as np
+# import sys
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.model_selection import cross_validate
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.model_selection import learning_curve
+from utils.regression_utils import (cv_scores_dict_to_cv_scores_df, cv_scores_analysis,
+                                    plot_pred_vs_actual_survey, flexibility_plot_regr)
 
 
 def perform_the_train_test_split(df, test_size, train_test_split_random_state, prefix=None, val=False, stratify=False):
@@ -157,7 +160,7 @@ def model_survey_cross_validation(preprocessor, estimator_dict, train_cap_x_df, 
             fit_params=None,
             params=None,
             pre_dispatch='2*n_jobs',
-            return_train_score=False,
+            return_train_score=True,
             return_estimator=False,
             return_indices=return_indices,
             error_score=np.nan
@@ -304,6 +307,117 @@ def plot_learning_curves(estimator, estimator_name, scoring, train_cap_x_df, tra
     learning_curve_df.head()
 
     plot_learning_curve(learning_curve_df, estimator_name, scoring)
+
+
+def model_survey_cross_val_and_analysis_helper(cv_scores_dict, target_attr, trained_estimator_dict, train_cap_x_df,
+                                               train_y_df, splitter):
+
+    # transform the cross validation results for analysis
+    return_dict = cv_scores_dict_to_cv_scores_df(cv_scores_dict)
+    cv_scores_analysis_df = return_dict['cv_scores_analysis_df']
+
+    # analysis
+    cv_scores_analysis(cv_scores_analysis_df, splitter, target_attr)
+    plot_pred_vs_actual_survey(trained_estimator_dict, train_cap_x_df, train_y_df, 'train')
+
+
+def model_survey_cross_val_and_analysis(preprocessor, estimator_dict, train_cap_x_df, train_y_df, scoring, splitter,
+                                        target_attr, trained_estimator_dict, **kwargs):
+
+    # perform model survey cross validation
+    return_dict = model_survey_cross_validation(preprocessor, estimator_dict, train_cap_x_df, train_y_df, scoring,
+                                                splitter, **kwargs)
+    cv_scores_dict = return_dict['cv_scores_dict']
+
+    model_survey_cross_val_and_analysis_helper(cv_scores_dict, target_attr, trained_estimator_dict, train_cap_x_df,
+                                               train_y_df, splitter)
+
+
+def select_score_df(gs_cv_results_df, score_of_interest, scoring):
+
+    # drop score attributes that do not apply to the score of interest
+
+    scores_to_drop = [score for score in scoring if score != score_of_interest]
+    all_attr_to_drop = []
+    for score in scores_to_drop:
+        attr_drop_list = [attr for attr in gs_cv_results_df if score in attr]
+        all_attr_to_drop.extend(attr_drop_list)
+
+    gs_cv_results_df = gs_cv_results_df.drop(columns=all_attr_to_drop)
+
+    return gs_cv_results_df
+
+
+def plot_flexibility(grid_search_cv, estimator_name, scoring):
+
+    results_dict_list = []
+    for score in scoring:
+
+        # extract results from grid_search_cv as data frame
+        gs_cv_results_df = pd.DataFrame(grid_search_cv.cv_results_)
+
+        # select the score data frame of interest
+        gs_cv_results_df = select_score_df(gs_cv_results_df, score, scoring)
+
+        # plot the flexibility plot
+        gs_cv_results_df, best_index = flexibility_plot_regr(gs_cv_results_df, estimator_name, score)
+
+        # get the best test score
+        best_test_score = gs_cv_results_df.loc[gs_cv_results_df.index == best_index, 'mean_test_' + score].values[0]
+
+        # collect the results of the analysis
+        results_dict_list.append(
+            {
+                'score': score,
+                'best_test_score': best_test_score,
+                'best_index': best_index,
+                'grid_search_cv': grid_search_cv,
+                'gs_cv_results_df': gs_cv_results_df,
+            }
+        )
+
+    return_dict = {
+        'results_df': pd.DataFrame(results_dict_list)
+    }
+
+    return return_dict
+
+
+def model_tuning_cross_val_and_analysis(tuned_estimator_dict, train_cap_x_df, train_y_df, scoring, splitter,
+                                        target_attr, return_indices=False, drop_cv_times=True):
+
+    cv_scores_dict = {'scoring': scoring}
+    best_estimator_dict = {}
+    for estimator_name, tuned_estimator in tuned_estimator_dict.items():
+
+        best_estimator = tuned_estimator.best_estimator_
+        scores_dict = cross_validate(
+            estimator=best_estimator,
+            X=train_cap_x_df,
+            y=train_y_df.values.ravel(),
+            groups=None,
+            scoring=scoring,
+            cv=splitter,
+            n_jobs=None,
+            verbose=0,
+            fit_params=None,
+            params=None,
+            pre_dispatch='2*n_jobs',
+            return_train_score=True,
+            return_estimator=False,
+            return_indices=return_indices,
+            error_score=np.nan
+        )
+
+        if drop_cv_times:
+            del scores_dict['score_time']
+            del scores_dict['fit_time']
+
+        cv_scores_dict[estimator_name] = scores_dict
+        best_estimator_dict[estimator_name] = best_estimator
+
+    model_survey_cross_val_and_analysis_helper(cv_scores_dict, target_attr, best_estimator_dict, train_cap_x_df,
+                                               train_y_df, splitter)
 
 
 if __name__ == "__main__":
