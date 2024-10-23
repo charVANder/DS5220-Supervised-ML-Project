@@ -1,6 +1,5 @@
 import pandas as pd
 import numpy as np
-# import sys
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.model_selection import cross_validate
@@ -9,6 +8,7 @@ import seaborn as sns
 from sklearn.model_selection import learning_curve
 from utils.regression_utils import (cv_scores_dict_to_cv_scores_df, cv_scores_analysis,
                                     plot_pred_vs_actual_survey, flexibility_plot_regr)
+# import sys
 
 
 def perform_the_train_test_split(df, test_size, train_test_split_random_state, prefix=None, val=False, stratify=False):
@@ -310,19 +310,21 @@ def plot_learning_curves(estimator, estimator_name, scoring, train_cap_x_df, tra
 
 
 def model_survey_cross_val_and_analysis_helper(cv_scores_dict, target_attr, trained_estimator_dict, train_cap_x_df,
-                                               train_y_df, splitter):
+                                               train_y_df, splitter, histplot=False, gs_survey_results_df=None,
+                                               boxplot=False, catplot=False):
 
     # transform the cross validation results for analysis
     return_dict = cv_scores_dict_to_cv_scores_df(cv_scores_dict)
     cv_scores_analysis_df = return_dict['cv_scores_analysis_df']
 
     # analysis
-    cv_scores_analysis(cv_scores_analysis_df, splitter, target_attr)
+    cv_scores_analysis(cv_scores_analysis_df, splitter, target_attr, histplot=histplot,
+                       gs_survey_results_df=gs_survey_results_df, boxplot=boxplot, catplot=catplot)
     plot_pred_vs_actual_survey(trained_estimator_dict, train_cap_x_df, train_y_df, 'train')
 
 
 def model_survey_cross_val_and_analysis(preprocessor, estimator_dict, train_cap_x_df, train_y_df, scoring, splitter,
-                                        target_attr, trained_estimator_dict, **kwargs):
+                                        target_attr, trained_estimator_dict, boxplot=True, catplot=True, **kwargs):
 
     # perform model survey cross validation
     return_dict = model_survey_cross_validation(preprocessor, estimator_dict, train_cap_x_df, train_y_df, scoring,
@@ -330,7 +332,7 @@ def model_survey_cross_val_and_analysis(preprocessor, estimator_dict, train_cap_
     cv_scores_dict = return_dict['cv_scores_dict']
 
     model_survey_cross_val_and_analysis_helper(cv_scores_dict, target_attr, trained_estimator_dict, train_cap_x_df,
-                                               train_y_df, splitter)
+                                               train_y_df, splitter, boxplot=boxplot, catplot=catplot)
 
 
 def select_score_df(gs_cv_results_df, score_of_interest, scoring):
@@ -384,10 +386,16 @@ def plot_flexibility(grid_search_cv, estimator_name, scoring):
 
 
 def model_tuning_cross_val_and_analysis(tuned_estimator_dict, train_cap_x_df, train_y_df, scoring, splitter,
-                                        target_attr, return_indices=False, drop_cv_times=True):
+                                        target_attr, return_indices=False, drop_cv_times=True, shuffle_target=False,
+                                        shuffle_target_random_state=42, histplot=False, gs_survey_results_df=None,
+                                        boxplot=True, catplot=True):
 
     cv_scores_dict = {'scoring': scoring}
     best_estimator_dict = {}
+
+    if shuffle_target:  # used to check for false discoveries
+        train_y_df = train_y_df.sample(frac=1, random_state=shuffle_target_random_state)
+
     for estimator_name, tuned_estimator in tuned_estimator_dict.items():
 
         best_estimator = tuned_estimator.best_estimator_
@@ -417,7 +425,19 @@ def model_tuning_cross_val_and_analysis(tuned_estimator_dict, train_cap_x_df, tr
         best_estimator_dict[estimator_name] = best_estimator
 
     model_survey_cross_val_and_analysis_helper(cv_scores_dict, target_attr, best_estimator_dict, train_cap_x_df,
-                                               train_y_df, splitter)
+                                               train_y_df, splitter, histplot=histplot, boxplot=boxplot,
+                                               catplot=catplot, gs_survey_results_df=gs_survey_results_df)
+
+
+def check_for_false_discoveries(tuned_estimator_dict, train_cap_x_df, train_y_df, scoring, splitter, target_attr,
+                                return_indices=False, drop_cv_times=True, shuffle_target=True,
+                                shuffle_target_random_state=42, histplot=True, gs_survey_results_df=None):
+
+    model_tuning_cross_val_and_analysis(tuned_estimator_dict, train_cap_x_df, train_y_df, scoring, splitter,
+                                        target_attr, return_indices=return_indices, drop_cv_times=drop_cv_times,
+                                        shuffle_target=shuffle_target,
+                                        shuffle_target_random_state=shuffle_target_random_state, histplot=histplot,
+                                        gs_survey_results_df=gs_survey_results_df, boxplot=False, catplot=False)
 
 
 if __name__ == "__main__":
