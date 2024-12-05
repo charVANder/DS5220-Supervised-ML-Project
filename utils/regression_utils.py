@@ -16,6 +16,9 @@ from sklearn.linear_model import Lasso
 from sklearn.linear_model import ElasticNet
 import sys
 import copy
+import statsmodels.api as sm
+from sklearn.base import BaseEstimator, RegressorMixin
+from scipy.stats import gaussian_kde
 
 
 def plot_pred_vs_actual_survey(trained_estimator_dict, cap_x_df, y_df, data_set_name):
@@ -29,6 +32,11 @@ def plot_pred_vs_actual_survey(trained_estimator_dict, cap_x_df, y_df, data_set_
     """
 
     for estimator_name, estimator in trained_estimator_dict.items():
+
+        str_type = str(type(estimator))  # for statsmodels.regression - add bias term
+        if 'statsmodels.regression' in str_type:
+            cap_x_df = sm.add_constant(cap_x_df)
+
         pred_y_df = estimator.predict(cap_x_df)
         plot_title = f'estimator_name: {estimator_name}; data_set_name: {data_set_name}'
         plot_pred_vs_actual(pred_y_df, y_df, plot_title)
@@ -58,8 +66,14 @@ def cv_scores_dict_to_cv_scores_df(cv_scores_dict):
 
     cv_scores_analysis_df = pd.DataFrame(df_row_dict_list)
 
-    print('\n', cv_scores_analysis_df.groupby(['regressor_name', 'score_name_', 'score_type']).mean().reset_index(),
-          '\n')
+    # TODO: there is a bug in cross_val_evaluation() that is causing duplicate rows in data frame
+    # TODO: dedup for now
+    cv_scores_analysis_df = cv_scores_analysis_df.drop_duplicates()
+    # TODO: line above is unnecessary once bug is fixed
+
+    grouped_df = cv_scores_analysis_df.groupby(['regressor_name', 'score_name_', 'score_type']).mean().reset_index()
+
+    print('\n', grouped_df, '\n')
 
     min_score = cv_scores_analysis_df.score.min()
     max_score = cv_scores_analysis_df.score.max()
@@ -67,7 +81,8 @@ def cv_scores_dict_to_cv_scores_df(cv_scores_dict):
     return_dict = {
         'cv_scores_analysis_df': cv_scores_analysis_df,
         'min_score': min_score,
-        'max_score': max_score
+        'max_score': max_score,
+        'grouped_df': grouped_df
     }
 
     return return_dict
@@ -216,15 +231,50 @@ def cv_scores_analysis(score_analysis, splitter, target_attr=None, boxplot=True,
             for regressor_name in test_temp_df.regressor_name.unique():
 
                 prep_df = prep_df_for_hist_plot_util_1(test_temp_df, regressor_name, gs_survey_results_df)
+                p_value = get_afd_p_value(prep_df)
 
                 print('\n')
                 ax = sns.histplot(data=prep_df, x='score', hue='type', common_norm=False, kde=True, bins=20,
-                                  stat='proportion')
+                                  stat='density')
                 sns.move_legend(ax, "upper left", bbox_to_anchor=(1, 1))
-                plt.title(regressor_name)
+                plt.title(f'{regressor_name}\np_value: {p_value}')
                 plt.xlabel(score_name_)
                 plt.grid()
                 plt.show()
+
+
+def get_afd_p_value(df, plot_null_distribution=False):
+    """
+    this code assumes a left tailed test
+    :param df:
+    :param plot_null_distribution:
+    :return:
+    """
+
+    # get the kde of the shuffled result - the null distribution
+    temp_df = df.loc[df.type == 'target_randomized', :]
+    kde = gaussian_kde(temp_df['score'])
+
+    # get R observed
+    r_obs = df.loc[df.type == 'target_not_randomized', 'score'].values[0]
+
+    # get the domain
+    max_ = max(r_obs, temp_df['score'].max())
+    min_ = min(r_obs, temp_df['score'].min())
+
+    if plot_null_distribution:
+        # plot the null distribution
+        x = np.linspace(min_ - 1, max_ + 1, 1000)
+        y = kde(x)
+        plt.plot(x, y)
+        plt.axvline(r_obs, c='r', linestyle='--', label='R observed')
+        plt.grid()
+        plt.show()
+
+    # get the p-value - assumes left tailed test
+    p_value = kde.integrate_box_1d(-np.inf, r_obs)
+
+    return p_value
 
 
 def prep_df_for_hist_plot_util_1(test_temp_df, regressor_name, gs_survey_results_df):
@@ -237,7 +287,7 @@ def prep_df_for_hist_plot_util_1(test_temp_df, regressor_name, gs_survey_results
         rename(columns={'best_test_score': 'score'})
     prep_df_2['type'] = 'target_not_randomized'
 
-    prep_df = pd.concat([prep_df_1, prep_df_2], axis=0)
+    prep_df = pd.concat([prep_df_1, prep_df_2], axis=0).reset_index(drop=True)
 
     return prep_df
 
@@ -938,6 +988,55 @@ def model_specific_cv(cap_x_df, y_df, nominal_attr, numerical_attr, model_type, 
     }
 
     return return_dict
+
+
+def fit_stats_models_ols(cap_x_y_df, print_summary=False):
+
+    sm_train_cap_x_df = sm.add_constant(cap_x_y_df.iloc[:, :-1])
+    model = sm.OLS(cap_x_y_df.iloc[:, -1], sm_train_cap_x_df).fit()
+
+    if print_summary:
+        print(model.summary())
+
+    return model
+
+
+def predict_with_fitted_stats_model_ols(model, cap_x_df):
+
+    sm_cap_x_df = sm.add_constant(cap_x_df)
+    pred_y_df = model.predict(sm_cap_x_df).to_frame().rename(columns={0: 'pred_y'})
+
+    return pred_y_df
+
+
+class SMWrapper(BaseEstimator, RegressorMixin):
+    """
+    https://stackoverflow.com/questions/41045752/
+    using-statsmodel-estimations-with-scikit-learn-cross-validation-is-it-possible
+
+    A universal sklearn-style wrapper for statsmodels regressors
+    cross_val_score(SMWrapper(sm.OLS), X, y, scoring='r2')
+    compare to
+    cross_val_score(LinearRegression(), X, y, scoring='r2')
+    """
+
+    def __init__(self, model_class, fit_intercept=True):
+        self.model_class = model_class
+        self.fit_intercept = fit_intercept
+        self.model_ = None
+        self.results_ = None
+
+    def fit(self, cap_x, y):
+        if self.fit_intercept:
+            cap_x = sm.add_constant(cap_x)
+        self.model_ = self.model_class(y, cap_x)
+        self.results_ = self.model_.fit()
+        return self
+
+    def predict(self, cap_x):
+        if self.fit_intercept:
+            cap_x = sm.add_constant(cap_x)
+        return self.results_.predict(cap_x)
 
 
 if __name__ == "__main__":

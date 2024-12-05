@@ -6,12 +6,17 @@ from sklearn.model_selection import cross_validate
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.model_selection import learning_curve
+from sklearn.utils import resample
 from utils.regression_utils import (cv_scores_dict_to_cv_scores_df, cv_scores_analysis,
                                     plot_pred_vs_actual_survey, flexibility_plot_regr)
-# import sys
+from sklearn.preprocessing import TargetEncoder
+from sklearn.preprocessing import StandardScaler
+from sklearn.impute import SimpleImputer
+from sklearn.compose import ColumnTransformer
 
 
-def perform_the_train_test_split(df, test_size, train_test_split_random_state, prefix=None, val=False, stratify=False):
+def perform_the_train_test_split(df, test_size, train_test_split_random_state, prefix=None, val=False,
+                                 classification_threshold=False, prob_cal=False, stratify=False):
 
     # if val = False then train/test split
     # if val = True then train/validation split - only difference is that the test set is saved as the val set
@@ -23,6 +28,10 @@ def perform_the_train_test_split(df, test_size, train_test_split_random_state, p
 
     if val:
         small_set_name = 'validation_df.csv'
+    elif classification_threshold:
+        small_set_name = 'class_thresh_set_df.csv'
+    elif prob_cal:
+        small_set_name = 'prob_cal_set_df.csv'
     else:
         small_set_name = 'test_df.csv'
 
@@ -311,20 +320,31 @@ def plot_learning_curves(estimator, estimator_name, scoring, train_cap_x_df, tra
 
 def model_survey_cross_val_and_analysis_helper(cv_scores_dict, target_attr, trained_estimator_dict, train_cap_x_df,
                                                train_y_df, splitter, histplot=False, gs_survey_results_df=None,
-                                               boxplot=False, catplot=False):
+                                               boxplot=False, catplot=False, task=None, return_=False):
 
     # transform the cross validation results for analysis
     return_dict = cv_scores_dict_to_cv_scores_df(cv_scores_dict)
     cv_scores_analysis_df = return_dict['cv_scores_analysis_df']
+    cv_scores_grouped_df = return_dict['grouped_df']
 
     # analysis
     cv_scores_analysis(cv_scores_analysis_df, splitter, target_attr, histplot=histplot,
                        gs_survey_results_df=gs_survey_results_df, boxplot=boxplot, catplot=catplot)
-    plot_pred_vs_actual_survey(trained_estimator_dict, train_cap_x_df, train_y_df, 'train')
+
+    if not (task == 'classification'):
+        plot_pred_vs_actual_survey(trained_estimator_dict, train_cap_x_df, train_y_df, 'train')
+
+    if return_:
+        return {
+            'cv_scores_grouped_df': cv_scores_grouped_df
+        }
+    else:
+        return None
 
 
 def model_survey_cross_val_and_analysis(preprocessor, estimator_dict, train_cap_x_df, train_y_df, scoring, splitter,
-                                        target_attr, trained_estimator_dict, boxplot=True, catplot=True, **kwargs):
+                                        target_attr, trained_estimator_dict, boxplot=True, catplot=True, task=None,
+                                        **kwargs):
 
     # perform model survey cross validation
     return_dict = model_survey_cross_validation(preprocessor, estimator_dict, train_cap_x_df, train_y_df, scoring,
@@ -332,7 +352,7 @@ def model_survey_cross_val_and_analysis(preprocessor, estimator_dict, train_cap_
     cv_scores_dict = return_dict['cv_scores_dict']
 
     model_survey_cross_val_and_analysis_helper(cv_scores_dict, target_attr, trained_estimator_dict, train_cap_x_df,
-                                               train_y_df, splitter, boxplot=boxplot, catplot=catplot)
+                                               train_y_df, splitter, boxplot=boxplot, catplot=catplot, task=task)
 
 
 def select_score_df(gs_cv_results_df, score_of_interest, scoring):
@@ -388,7 +408,7 @@ def plot_flexibility(grid_search_cv, estimator_name, scoring):
 def model_tuning_cross_val_and_analysis(tuned_estimator_dict, train_cap_x_df, train_y_df, scoring, splitter,
                                         target_attr, return_indices=False, drop_cv_times=True, shuffle_target=False,
                                         shuffle_target_random_state=42, histplot=False, gs_survey_results_df=None,
-                                        boxplot=True, catplot=True):
+                                        boxplot=True, catplot=True, task=None, return_=False):
 
     cv_scores_dict = {'scoring': scoring}
     best_estimator_dict = {}
@@ -398,7 +418,11 @@ def model_tuning_cross_val_and_analysis(tuned_estimator_dict, train_cap_x_df, tr
 
     for estimator_name, tuned_estimator in tuned_estimator_dict.items():
 
-        best_estimator = tuned_estimator.best_estimator_
+        try:
+            best_estimator = tuned_estimator.best_estimator_
+        except AttributeError:
+            best_estimator = tuned_estimator
+
         scores_dict = cross_validate(
             estimator=best_estimator,
             X=train_cap_x_df,
@@ -424,20 +448,94 @@ def model_tuning_cross_val_and_analysis(tuned_estimator_dict, train_cap_x_df, tr
         cv_scores_dict[estimator_name] = scores_dict
         best_estimator_dict[estimator_name] = best_estimator
 
-    model_survey_cross_val_and_analysis_helper(cv_scores_dict, target_attr, best_estimator_dict, train_cap_x_df,
-                                               train_y_df, splitter, histplot=histplot, boxplot=boxplot,
-                                               catplot=catplot, gs_survey_results_df=gs_survey_results_df)
+    return_dict = model_survey_cross_val_and_analysis_helper(cv_scores_dict, target_attr, best_estimator_dict,
+                                                             train_cap_x_df, train_y_df, splitter, histplot=histplot,
+                                                             boxplot=boxplot, catplot=catplot,
+                                                             gs_survey_results_df=gs_survey_results_df, task=task,
+                                                             return_=return_)
+
+    if return_:
+        return return_dict
+    else:
+        return None
 
 
 def check_for_false_discoveries(tuned_estimator_dict, train_cap_x_df, train_y_df, scoring, splitter, target_attr,
                                 return_indices=False, drop_cv_times=True, shuffle_target=True,
-                                shuffle_target_random_state=42, histplot=True, gs_survey_results_df=None):
+                                shuffle_target_random_state=42, histplot=True, gs_survey_results_df=None, task=None):
 
     model_tuning_cross_val_and_analysis(tuned_estimator_dict, train_cap_x_df, train_y_df, scoring, splitter,
                                         target_attr, return_indices=return_indices, drop_cv_times=drop_cv_times,
                                         shuffle_target=shuffle_target,
                                         shuffle_target_random_state=shuffle_target_random_state, histplot=histplot,
-                                        gs_survey_results_df=gs_survey_results_df, boxplot=False, catplot=False)
+                                        gs_survey_results_df=gs_survey_results_df, boxplot=False, catplot=False,
+                                        task=task)
+
+
+def check_for_complete_unique_attrs(cap_x_df):
+
+    print(f'the data frame has {cap_x_df.shape[0]} rows\n')
+
+    concern_list = []
+    for attr in cap_x_df.columns:
+        label = ''
+        if cap_x_df[attr].nunique() == cap_x_df.shape[0]:
+            label = 'examine more closely'
+            concern_list.append(attr)
+        print(f'{attr} has {cap_x_df[attr].nunique()} unique values and is dtype {cap_x_df[attr].dtype} {label}')
+
+    return concern_list
+
+
+def sample_data_objects_for_speed_up(cap_x_df, y_df, frac=0.10, random_state=42):
+
+    n_samples = int(frac * cap_x_df.shape[0])
+    cap_x_y_df = cap_x_df.join(y_df)
+
+    speed_up_cap_x_y_df = resample(
+        cap_x_y_df,
+        replace=False,
+        n_samples=n_samples,
+        random_state=random_state,
+        stratify=cap_x_y_df.iloc[:, -1]
+    )
+
+    return speed_up_cap_x_y_df.iloc[:, :-1], speed_up_cap_x_y_df.iloc[:, -1]
+
+
+def build_preproc_pipeline(nominal_attr, numerical_attr, target_encoder_random_state, target_type):
+
+    numerical_transformer = Pipeline(
+        steps=[
+            ("imputer", SimpleImputer()),
+            ("scaler", StandardScaler())
+        ]
+    )
+
+    nominal_transformer = Pipeline(
+        steps=[
+            ("imputer", SimpleImputer(strategy='most_frequent')),
+            ("target_encoder", TargetEncoder(
+                categories='auto',
+                target_type=target_type,
+                smooth='auto',
+                cv=5,
+                shuffle=True,
+                random_state=target_encoder_random_state
+            )
+             ),
+            ("scaler", StandardScaler())
+        ]
+    )
+
+    preprocessor = ColumnTransformer(
+        transformers=[
+            ('nominal', nominal_transformer, nominal_attr),
+            ('numerical', numerical_transformer, numerical_attr)
+        ]
+    )
+
+    return preprocessor
 
 
 if __name__ == "__main__":
